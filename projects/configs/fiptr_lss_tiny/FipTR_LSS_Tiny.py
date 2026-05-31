@@ -288,7 +288,7 @@ test_pipeline = [
                 with_label=False),
             dict(
                 type='Collect3D',
-                keys=['img_inputs', 'future_egomotions', 'motion_segmentation',
+                keys=['img_inputs', "gt_bboxes_3d", "gt_labels_3d", 'future_egomotions', 'motion_segmentation',
                       'motion_instance', 'has_invalid_frame', 'img_is_valid', 'instance_flow', 'gt_masks', 'gt_backward_flow',  'instance_centerness', 'instance_offset'],
                 meta_keys=('filename', 'ori_shape', 'img_shape', 'lidar2img', 'depth2img', 'cam2img', 'pad_shape', 'scale_factor', 'flip',
                            'pcd_horizontal_flip', 'pcd_vertical_flip', 'box_mode_3d', 'box_type_3d', 'img_norm_cfg', 'pcd_trans', 'sample_idx',

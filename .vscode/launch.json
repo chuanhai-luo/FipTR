@@ -53,14 +53,14 @@
             "console": "integratedTerminal",
             "justMyCode": false,
             "env": {
-                "PYTHONPATH": "${workspaceFolder):${env:PYTHONPATH)",
+                "PYTHONPATH": "${workspaceFolder}:${env:PYTHONPATH}",
                 "CUDA_LAUNCH_BLOCKING": "1",
                 "OMP_NUM_THREADS": "4",
             },
             "args": [
-                "projects/configs/fiptr_Iss_tiny/FipTR_LSS_Tiny.py",
-                // "projects/configs/fiptr_Iss_tiny/FipTR_LSS_Tiny_CBGS.py",
-                // "projects/configs/fiptr_Iss_tiny/FipTR_LSS_Tiny_SyncBN.py",
+                "projects/configs/fiptr_lss_tiny/FipTR_LSS_Tiny.py",
+                // "projects/configs/fiptr_lss_tiny/FipTR_LSS_Tiny_CBGS.py",
+                // "projects/configs/fiptr_lss_tiny/FipTR_LSS_Tiny_SyncBN.py",
                 "--launcher", "none",
                 "--deterministic",
             ]

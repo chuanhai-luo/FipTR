@@ -1,3 +1,5 @@
+import os
+import cv2
 import mmcv
 import time
 import torch.nn.functional as F
@@ -7,9 +9,10 @@ from os import path as osp
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import linear_sum_assignment
-
+from tqdm import tqdm
 from .metrics import IntersectionOverUnion, PanopticMetric
-from .visualizer import visualize_motion, visualize_det
+from .visualizer import visualize_motion, visualize_det, visualize_bev
+
 def single_gpu_test(model,
                     data_loader,
                     show=False,
@@ -19,7 +22,6 @@ def single_gpu_test(model,
     model.eval()
     results = []
     dataset = data_loader.dataset
-    prog_bar = mmcv.ProgressBar(len(dataset))
 
     # evaluate motion in (short, long) ranges
     EVALUATION_RANGES = {'30x30': (70, 130), '100x100': (0, 200)}
@@ -37,19 +39,14 @@ def single_gpu_test(model,
 
     out_dir = "val_vis"
     duration = []
-    for i, data in enumerate(data_loader):
+    for i, data in enumerate(tqdm(data_loader)):
         with torch.no_grad():
             if "has_invalid_frame" in data:
                 has_invalid_frame = data['has_invalid_frame'][0]
             else:
                 has_invalid_frame = False
             
-            start = time.time()
             result = model(return_loss=False, rescale=True, **data)
-            end = time.time()
-            duration.append(end - start)
-            time_sum = sum(duration)
-            print("FPS : %f" % (1.0 / (time_sum / len(duration))))
 
             if type(result) == list:
                 model_name = "fistr"
@@ -72,15 +69,63 @@ def single_gpu_test(model,
                         "segmentation": data["motion_segmentation"][0],
                         "instance": data["motion_instance"][0],
                             }
-                    
-                    visualize_motion(motion_targets, {"segmentation": motion_segmentation, "instance": motion_instance}, 
-                    save_path = out_dir, model="fistr", index=i)
 
-                    visualize_det(img_metas = data["img_metas"][0].data[0][0],
-                          bbox_results= result[0], 
-                          vis_thresh = 0.25, 
-                          save_path = out_dir, index=i)
-                
+                    motion_map = visualize_motion(
+                        motion_targets,
+                        {
+                            "segmentation": motion_segmentation,
+                            "instance": motion_instance,
+                        },
+                        model="fistr",
+                    )
+                    bev_map = visualize_bev(
+                        img_metas=data["img_metas"][0].data[0][0],
+                        bbox_results=result[0],
+                        gt_bboxes=data["gt_bboxes_3d"][0],
+                        gt_labels=data["gt_labels_3d"][0],
+                        vis_thresh=0.25,
+                    )
+                    images_bboxes = visualize_det(
+                        img_metas=data["img_metas"][0].data[0][0],
+                        bbox_results=result[0],
+                        gt_bboxes=data["gt_bboxes_3d"][0],
+                        gt_labels=data["gt_labels_3d"][0],
+                        vis_thresh=0.25,
+                    )
+
+                    motion_map = np.hstack(
+                        (
+                            np.vstack(
+                                (
+                                    np.full((100, 400, 3), 0, dtype=np.uint8),
+                                    images_bboxes["CAM_FRONT_LEFT"],
+                                    images_bboxes["CAM_BACK_LEFT"],
+                                    np.full((100, 400, 3), 0, dtype=np.uint8),
+                                )
+                            ),
+                            np.vstack(
+                                (
+                                    images_bboxes["CAM_FRONT"],
+                                    motion_map,
+                                    images_bboxes["CAM_BACK"],
+                                )
+                            ),
+                            np.vstack(
+                                (
+                                    np.full((100, 400, 3), 0, dtype=np.uint8),
+                                    images_bboxes["CAM_FRONT_RIGHT"],
+                                    images_bboxes["CAM_BACK_RIGHT"],
+                                    np.full((100, 400, 3), 0, dtype=np.uint8),
+                                )
+                            ),
+                            bev_map,
+                        )
+                    )
+
+                    cv2.imwrite(
+                        osp.join(out_dir, f"motion_map_{i}.png"),
+                        cv2.cvtColor(motion_map, cv2.COLOR_BGR2RGB),
+                    )
                 else: # beverse
                     motion_segmentation = result['motion_segmentation'] # bs 5 1 200 200 bs*t*1*200*200
                     motion_instance = result["motion_instance"] # bs 5 200 200 bs*t*200*200
@@ -107,10 +152,6 @@ def single_gpu_test(model,
 
             
             results.extend(result)
-
-        batch_size = 1
-        for _ in range(batch_size):
-            prog_bar.update()
     
     print('\n[Validation {:04d} / {:04d}]: motion metrics: '.format(motion_eval_count, len(dataset)))
     

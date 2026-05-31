@@ -159,5 +159,5 @@ websocket-client==1.2.1
 Werkzeug==2.0.1
 widgetsnbextension==3.5.1
 xmltodict==0.15.0
-yapf==0.43.0
+yapf==0.40.1
 zipp==3.20.2

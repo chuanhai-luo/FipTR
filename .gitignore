@@ -15,3 +15,5 @@ mmdet3d/.mim
 
 # Pytorch
 *.pth
+val_vis/
+test/

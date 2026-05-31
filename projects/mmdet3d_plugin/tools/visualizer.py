@@ -11,7 +11,7 @@ from mmdet3d.core.visualizer.image_vis import draw_lidar_bbox3d_on_img
 from ..fiptr.utils.instance import predict_instance_segmentation_and_trajectories as predict_instance_segmentation_and_trajectories_beverse
 from ..fiptr.visualize.motion_visualisation import plot_instance_map
 
-def visualize_motion(motion_targets, motion_preds, save_path, model = "fistr", index = None):
+def visualize_motion(motion_targets, motion_preds, model = "fistr"):
     if model == "beverse":
         segmentation_binary = motion_targets['segmentation']
         segmentation = segmentation_binary.new_zeros(
@@ -31,18 +31,152 @@ def visualize_motion(motion_targets, motion_preds, save_path, model = "fistr", i
         gt_image = plot_motion(motion_targets, "fistr")
         pred_image = plot_motion(motion_preds, "fistr")
 
-    final_image = np.concatenate([pred_image, gt_image])
-    final_image = flip_rotate_image(final_image)
-    
-    if save_path == None:
-        save_path = "val_vis"
-    os.makedirs(save_path, exist_ok=True)
-    if index != None:
-        imageio.imwrite('{}/motion_{}.png'.format(save_path, index), final_image)
-    else:
-        imageio.imwrite('{}/motion.png'.format(save_path), final_image)
-    
-def visualize_det(img_metas, bbox_results, vis_thresh, save_path, index = None):
+    pred_image = flip_rotate_image(pred_image)
+    gt_image = flip_rotate_image(gt_image)
+
+    cv2.putText(
+        pred_image,
+        "motion_pred",
+        (5, 10),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.3,
+        (255, 128, 0),
+        thickness=1,
+    )
+    cv2.putText(
+        gt_image,
+        "motion_gt",
+        (5, 10),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.3,
+        (255, 128, 0),
+        thickness=1,
+    )
+
+    final_image = np.hstack((gt_image, pred_image))
+    cv2.line(
+        final_image,
+        (final_image.shape[1] // 2, 0),
+        (final_image.shape[1] // 2, final_image.shape[0]),
+        (128, 128, 128),
+        thickness=1,
+    )
+
+    return final_image
+
+def prepare_canvas(canvas_height):
+    xmin, xmax, ymin, ymax = -50, 100, -50, 50
+    canvas_width = (canvas_height * (ymax - ymin)) // (xmax - xmin)
+    bev_canvas = np.zeros((canvas_height, canvas_width, 3), dtype=np.uint8)
+
+    pixels_per_meter = bev_canvas.shape[0] / (xmax - xmin)
+
+    ego_pos = (int(xmax * pixels_per_meter), int(bev_canvas.shape[1] / 2))
+    ego_length = 5 * pixels_per_meter
+    ego_width = 2 * pixels_per_meter
+    cv2.rectangle(
+        bev_canvas,
+        (int(ego_pos[1] - ego_width / 2), int(ego_pos[0] - ego_length / 2)),
+        (int(ego_pos[1] + ego_width / 2), int(ego_pos[0] + ego_length / 2)),
+        (255, 128, 0),
+        -1,
+    )
+
+    interval = 10 * pixels_per_meter
+    dist_marker_color = (128, 128, 128)
+    for i in range(-4, 5):
+        cv2.line(
+            bev_canvas,
+            (int(ego_pos[1] + i * interval), 0),
+            (int(ego_pos[1] + i * interval), bev_canvas.shape[0]),
+            dist_marker_color,
+            1,
+            cv2.LINE_AA,
+        )
+    for i in range(-9, 5):
+        cv2.line(
+            bev_canvas,
+            (0, int(ego_pos[0] + i * interval)),
+            (bev_canvas.shape[1], int(ego_pos[0] + i * interval)),
+            dist_marker_color,
+            1,
+            cv2.LINE_AA,
+        )
+    return bev_canvas, pixels_per_meter, ego_pos
+
+def visualize_bev(img_metas, bbox_results, gt_bboxes, gt_labels, vis_thresh):
+    bev_canvas, pixels_per_meter, ego_pos = prepare_canvas(650)
+
+    bbox_results = bbox_results["pts_bbox"]
+    pred_lidar_boxes = bbox_results["boxes_3d"]
+    pred_labels = bbox_results["labels_3d"]
+    pred_scores_3d = bbox_results["scores_3d"]
+    pred_score_mask = pred_scores_3d > vis_thresh
+    pred_lidar_boxes = pred_lidar_boxes[pred_score_mask]
+    pred_labels = pred_labels[pred_score_mask]
+
+    gt_lidar_boxes = gt_bboxes.data[0][0]
+    gt_labels = gt_labels.data[0][0]
+
+    # gt
+    for label, corners in zip(gt_labels, gt_lidar_boxes.corners):
+        bottom_corners = corners[[0, 3, 4, 7]][:, :2]
+        bottom_corners *= pixels_per_meter
+
+        corners_px = np.array(
+            [(int(ego_pos[1] - c[1]), int(ego_pos[0] - c[0])) for c in bottom_corners]
+        )
+        # sort corners
+        corners_px = corners_px[
+            np.argsort(
+                np.arctan2(
+                    corners_px[:, 1] - np.mean(corners_px[:, 1]),
+                    corners_px[:, 0] - np.mean(corners_px[:, 0]),
+                )
+            )
+        ]
+        cv2.fillConvexPoly(
+            bev_canvas,
+            corners_px,
+            color=(0, 255, 0),
+            lineType=cv2.LINE_AA,
+        )
+
+    # pred
+    lidar2ego_rt = np.eye(4)
+    lidar2ego_rt[:3, :3] = img_metas["lidar2ego_rots"]
+    lidar2ego_rt[:3, -1] = img_metas["lidar2ego_trans"]
+
+    for label, corners in zip(pred_labels, pred_lidar_boxes.corners):
+        ones = np.ones((corners.shape[0], 1))
+        corners = np.concatenate([corners.cpu().numpy(), ones], axis=1)
+        corners = corners @ lidar2ego_rt.T
+
+        bottom_corners = corners[[0, 3, 4, 7]][:, :2]
+        bottom_corners *= pixels_per_meter
+
+        corners_px = np.array(
+            [(int(ego_pos[1] - c[1]), int(ego_pos[0] - c[0])) for c in bottom_corners]
+        )
+        # sort corners
+        corners_px = corners_px[
+            np.argsort(
+                np.arctan2(
+                    corners_px[:, 1] - np.mean(corners_px[:, 1]),
+                    corners_px[:, 0] - np.mean(corners_px[:, 0]),
+                )
+            )
+        ]
+        cv2.fillConvexPoly(
+            bev_canvas,
+            corners_px,
+            color=(255, 0, 0),
+            lineType=cv2.LINE_AA,
+        )
+
+    return bev_canvas
+
+def visualize_det(img_metas, bbox_results, gt_bboxes, gt_labels, vis_thresh):
 
     img_infos = img_metas['img_info'][-1]
 
@@ -55,8 +189,11 @@ def visualize_det(img_metas, bbox_results, vis_thresh, save_path, index = None):
     pred_lidar_boxes = pred_lidar_boxes[pred_score_mask]
     pred_labels = pred_labels[pred_score_mask]
 
-    gt_bbox_color = (61, 102, 255)
-    pred_bbox_color = (241, 101, 72)
+    gt_lidar_boxes = gt_bboxes.data[0][0]
+    gt_labels = gt_labels.data[0][0]
+
+    gt_bbox_color = (0, 255, 0)
+    pred_bbox_color = (255, 0, 0)
 
     pred_imgs = {}
     for cam_type, img_info in img_infos.items():
@@ -87,39 +224,31 @@ def visualize_det(img_metas, bbox_results, vis_thresh, save_path, index = None):
             img_with_pred = draw_lidar_bbox3d_on_img(
                         pred_lidar_boxes, img, lidar2img, None, color=pred_bbox_color,  thickness=2)
 
-            img_with_pred = cv2.putText(img_with_pred, cam_type, (80, 100),cv2.FONT_HERSHEY_SIMPLEX , 3 , (255,255,255), thickness = 4)
-        imageio.imwrite(
-                '{}/det_pred_{}.png'.format(save_path, cam_type), img)
+        img_with_pred = draw_lidar_bbox3d_on_img(
+            gt_lidar_boxes,
+            img_with_pred,
+            ego2img,
+            None,
+            color=gt_bbox_color,
+            thickness=2,
+        )
+        img_with_pred = cv2.resize(
+            img_with_pred,
+            (int(img_with_pred.shape[1] / 4), int(img_with_pred.shape[0] / 4)),
+            interpolation=cv2.INTER_LANCZOS4,
+        )
+        cv2.putText(
+            img_with_pred,
+            cam_type,
+            (5, 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            (255, 0, 0),
+            thickness=1,
+        )
         pred_imgs[cam_type] = img_with_pred
 
-    val_w = 6.4
-    val_h = val_w / 16 * 9
-    fig = plt.figure(figsize=(3 * val_w, 2 * val_h))
-    width_ratios = (val_w, val_w, val_w)
-    gs = mpl.gridspec.GridSpec(2, 3, width_ratios=width_ratios)
-    plt.subplots_adjust(wspace=0, hspace=0)
-    vis_orders = [
-        "CAM_FRONT_LEFT",
-        "CAM_FRONT",
-        "CAM_FRONT_RIGHT",
-        "CAM_BACK_LEFT",
-        "CAM_BACK",
-        "CAM_BACK_RIGHT",
-    ]
-
-    for img_index, vis_cam_type in enumerate(vis_orders):
-        vis_pred_img = pred_imgs[vis_cam_type]
-
-        # prediction
-        ax = plt.subplot(gs[(img_index // 3), img_index % 3])
-        plt.imshow(vis_pred_img)
-        plt.axis('off')
-        plt.draw()
-    
-    plt.savefig(save_path + '/det_{}.png'.format(index), bbox_inches='tight', pad_inches=0)
-        
-
-
+    return pred_imgs
 
 def plot_motion(motion_preds, model):
     if model == "beverse" :
