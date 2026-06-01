@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from scipy.optimize import linear_sum_assignment
 from tqdm import tqdm
 from .metrics import IntersectionOverUnion, PanopticMetric
-from .visualizer import visualize_motion, visualize_det, visualize_bev
+from .visualizer import visualize_flow, visualize_motion, visualize_det, visualize_bev
 
 def single_gpu_test(model,
                     data_loader,
@@ -78,13 +78,6 @@ def single_gpu_test(model,
                         },
                         model="fistr",
                     )
-                    bev_map = visualize_bev(
-                        img_metas=data["img_metas"][0].data[0][0],
-                        bbox_results=result[0],
-                        gt_bboxes=data["gt_bboxes_3d"][0],
-                        gt_labels=data["gt_labels_3d"][0],
-                        vis_thresh=0.25,
-                    )
                     images_bboxes = visualize_det(
                         img_metas=data["img_metas"][0].data[0][0],
                         bbox_results=result[0],
@@ -92,8 +85,7 @@ def single_gpu_test(model,
                         gt_labels=data["gt_labels_3d"][0],
                         vis_thresh=0.25,
                     )
-
-                    motion_map = np.hstack(
+                    canvas = np.hstack(
                         (
                             np.vstack(
                                 (
@@ -118,13 +110,35 @@ def single_gpu_test(model,
                                     np.full((100, 400, 3), 0, dtype=np.uint8),
                                 )
                             ),
-                            bev_map,
                         )
                     )
 
+                    flow_map = visualize_flow(None, data["gt_backward_flow"][0])
+                    flow_map = cv2.resize(
+                        flow_map,
+                        (
+                            int(
+                                canvas.shape[0] / flow_map.shape[0] * flow_map.shape[1]
+                            ),
+                            canvas.shape[0],
+                        ),
+                        interpolation=cv2.INTER_LANCZOS4,
+                    )
+                    canvas = np.hstack((flow_map, canvas))
+
+                    bev_map = visualize_bev(
+                        canvas.shape[0],
+                        img_metas=data["img_metas"][0].data[0][0],
+                        bbox_results=result[0],
+                        gt_bboxes=data["gt_bboxes_3d"][0],
+                        gt_labels=data["gt_labels_3d"][0],
+                        vis_thresh=0.25,
+                    )
+                    canvas = np.hstack((canvas, bev_map))
+
                     cv2.imwrite(
                         osp.join(out_dir, f"motion_map_{i}.png"),
-                        cv2.cvtColor(motion_map, cv2.COLOR_BGR2RGB),
+                        cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB),
                     )
                 else: # beverse
                     motion_segmentation = result['motion_segmentation'] # bs 5 1 200 200 bs*t*1*200*200

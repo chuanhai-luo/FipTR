@@ -28,6 +28,7 @@ from .segmentation import BEV_Decoder_x1
 from .map_head import BevFeatureSlicer
 from .bev_encoder import BevEncode, CustomBottleneck
 from mmcv.cnn.bricks.transformer import build_transformer_layer_sequence
+from projects.mmdet3d_plugin.tools.visualizer import visualize_flow
 
 @HEADS.register_module()
 class FIPTR_LSS_TIMESPECIFICMASKQUERY(DETRHead):
@@ -721,7 +722,9 @@ class FIPTR_LSS_TIMESPECIFICMASKQUERY(DETRHead):
         pred_flows = preds_dicts["predict_flows"]
         
         gt_flows = torch.flip(gt_flow, dims = [2])
-        
+
+        flow_maps = visualize_flow(pred_flows, gt_flows)
+
         loss_flow = 0.0
         for i in range(num_future - 1):
             current_flow, current_gt = pred_flows[:, i], gt_flows[:, i]

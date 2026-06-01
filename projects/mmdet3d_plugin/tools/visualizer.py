@@ -11,6 +11,69 @@ from mmdet3d.core.visualizer.image_vis import draw_lidar_bbox3d_on_img
 from ..fiptr.utils.instance import predict_instance_segmentation_and_trajectories as predict_instance_segmentation_and_trajectories_beverse
 from ..fiptr.visualize.motion_visualisation import plot_instance_map
 
+def visualize_flow(pred_flows, gt_flows):
+    if pred_flows is not None:
+        B, T, C, H, W = pred_flows.shape
+    elif gt_flows is not None:
+        B, T, C, H, W = gt_flows.shape
+    else:
+        return None
+
+    if pred_flows is not None:
+        pred_flows = pred_flows.detach().cpu().numpy()
+    if gt_flows is not None:
+        gt_flows = gt_flows.detach().cpu().numpy()
+
+    def draw_flow_map(flows, H, W, is_gt=False):
+        flow_map = np.full((H, W, 3), 255, dtype=np.uint8)
+
+        if flows is not None:
+            for h in range(H):
+                for w in range(W):
+                    flow = flows[:, h, w]
+                    if np.linalg.norm(flow) >= 5:
+                        start_point = np.array([w, h])
+                        end_point = start_point + flow
+                        cv2.arrowedLine(
+                            flow_map,
+                            start_point.astype(np.int32),
+                            end_point.astype(np.int32),
+                            (0, 0, 255),
+                            thickness=1,
+                            tipLength=0.2,
+                        )
+        cv2.putText(
+            flow_map,
+            "gt_flow" if is_gt else "pred_flow",
+            (5, 13),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            (255, 128, 0),
+            thickness=1,
+        )
+        flow_map = cv2.copyMakeBorder(
+            flow_map, 1, 1, 1, 1, borderType=cv2.BORDER_CONSTANT, value=[0, 0, 0]
+        )
+
+        return flow_map
+
+    flow_maps = []
+    for b in range(B):
+        for t in range(T):
+            pred_flow_map = draw_flow_map(
+                pred_flows[b, t] if pred_flows is not None else None, H, W, is_gt=False
+            )
+            gt_flow_map = draw_flow_map(
+                gt_flows[b, t] if gt_flows is not None else None, H, W, is_gt=True
+            )
+
+            flow_map = np.hstack((gt_flow_map, pred_flow_map))
+            flow_maps.append(flow_map)
+
+    flow_maps = np.vstack(flow_maps)
+
+    return flow_maps
+
 def visualize_motion(motion_targets, motion_preds, model = "fistr"):
     if model == "beverse":
         segmentation_binary = motion_targets['segmentation']
@@ -36,7 +99,7 @@ def visualize_motion(motion_targets, motion_preds, model = "fistr"):
 
     cv2.putText(
         pred_image,
-        "motion_pred",
+        "pred_motion",
         (5, 10),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.3,
@@ -45,7 +108,7 @@ def visualize_motion(motion_targets, motion_preds, model = "fistr"):
     )
     cv2.putText(
         gt_image,
-        "motion_gt",
+        "gt_motion",
         (5, 10),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.3,
@@ -104,8 +167,10 @@ def prepare_canvas(canvas_height):
         )
     return bev_canvas, pixels_per_meter, ego_pos
 
-def visualize_bev(img_metas, bbox_results, gt_bboxes, gt_labels, vis_thresh):
-    bev_canvas, pixels_per_meter, ego_pos = prepare_canvas(650)
+def visualize_bev(
+    canvas_height, img_metas, bbox_results, gt_bboxes, gt_labels, vis_thresh
+):
+    bev_canvas, pixels_per_meter, ego_pos = prepare_canvas(canvas_height)
 
     bbox_results = bbox_results["pts_bbox"]
     pred_lidar_boxes = bbox_results["boxes_3d"]
