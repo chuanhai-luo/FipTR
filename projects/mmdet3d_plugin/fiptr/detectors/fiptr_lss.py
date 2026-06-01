@@ -6,7 +6,7 @@ from mmdet3d.models import builder
 
 import pdb
 import time
-
+import swanlab
 from mmcv.runner import auto_fp16, force_fp32
 
 def bbox3d2result(bboxes, scores, labels, segmentation = None, instance = None, seg = False, attrs=None):
@@ -84,6 +84,12 @@ class FIPTR_LSS(MVXTwoStageDetector):
 
         self.fp16_enabled = False
         self.data_aug_conf = data_aug_conf
+
+        self.global_step = 0
+        self.logger = swanlab.init(
+            project="fiptr",
+            config={},
+        )
 
     # shared step
     def extract_img_feat(self, img, img_metas, future_egomotion=None,
@@ -208,6 +214,14 @@ class FIPTR_LSS(MVXTwoStageDetector):
         )
 
         loss_dict = self.forward_pts_train(img_feats, img_metas, gt_bboxes_3d, gt_labels_3d, gt_masks=gt_masks, gt_flow=gt_backward_flow)
+
+        loss = {key:value.item() for key,value in loss_dict.items()}
+        loss["loss"] = sum(value for value in loss.values())
+
+        if self.global_step % 10 == 0:
+            self.logger.log({"loss": loss}, step=self.global_step)
+
+        self.global_step += 1
 
         return loss_dict
 
