@@ -1,5 +1,5 @@
 from typing import Tuple
-
+import cv2
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -7,7 +7,6 @@ from scipy.optimize import linear_sum_assignment
 from .geometry import mat2pose_vec, pose_vec2mat, warp_features
 
 import pdb
-
 
 def convert_instance_mask_to_center_and_offset_label(instance_img, future_egomotion, num_instances, ignore_index=255, subtract_egomotion=True, sigma=3, spatial_extent=None):
 
@@ -169,6 +168,94 @@ def convert_instance_mask_to_center_and_offset_label_with_warper(
 
     return center_label, offset_label, future_displacement_label
 
+def visualize_instance_mask(
+    instance_img,
+    warped_instance_seg,
+    center_label,
+    offset_label,
+    future_displacement_label,
+    backward_flow,
+    instance_center=None,
+    instance_id=None,
+):
+    instance_img = np.hstack([img for img in instance_img.numpy()])
+    instance_img = cv2.normalize(instance_img, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+    instance_img = np.stack((instance_img,) * 3, axis=-1)
+    cv2.putText(instance_img, "instance_img", (5, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 128, 0), thickness=1)
+    if instance_id is not None and instance_center is not None:
+        cv2.putText(instance_img, f"{instance_id}", instance_center, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 128, 0), thickness=1)
+
+    warped_instance_seg = np.hstack(
+        [warped_instance_seg[i].numpy() for i in range(1, 5)] + [np.zeros(warped_instance_seg[1].shape, dtype=np.uint8)]
+    )
+    warped_instance_seg = cv2.normalize(
+        warped_instance_seg, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U
+    )
+    warped_instance_seg = np.stack((warped_instance_seg,) * 3, axis=-1)
+    cv2.putText(
+        warped_instance_seg, "warped_instance_seg", (5, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 128, 0), thickness=1
+    )
+    if instance_id is not None and instance_center is not None:
+        cv2.putText(warped_instance_seg, f"{instance_id}", instance_center, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 128, 0), thickness=1)
+
+    center_label = np.hstack([img[0] for img in center_label.numpy()])
+    center_label = cv2.normalize(center_label, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+    center_label = np.stack((center_label,) * 3, axis=-1)
+    cv2.putText(center_label, "center_label", (5, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 128, 0), thickness=1)
+    if instance_id is not None and instance_center is not None:
+        cv2.putText(center_label, f"{instance_id}", instance_center, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 128, 0), thickness=1)
+
+    def draw_flows(flow_maps):
+        flow_imgs = []
+
+        for flow_map in flow_maps:
+            flow_img = np.full((flow_map.shape[1], flow_map.shape[2], 3), 255, dtype=np.uint8)
+
+            for r in range(flow_img.shape[0]):
+                for c in range(flow_img.shape[1]):
+                    flow = flow_map[:, r, c]
+                    if np.all(flow == 255).all() or np.all(flow == 0):
+                        continue
+
+                    start = (c, r)
+                    end = (int(c + flow[0]), int(r + flow[1]))
+                    cv2.arrowedLine(flow_img, start, end, (0, 255, 0), 1)
+
+            flow_imgs.append(flow_img)
+
+        return np.hstack(flow_imgs)
+
+    offset_label = draw_flows(offset_label.numpy())
+    cv2.putText(offset_label, "offset_label", (5, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 128, 0), thickness=1)
+    if instance_id is not None and instance_center is not None:
+        cv2.putText(offset_label, f"{instance_id}", instance_center, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 128, 0), thickness=1)
+
+    future_displacement_label = draw_flows(future_displacement_label.numpy())
+    cv2.putText(
+        future_displacement_label,
+        "future_displacement_label",
+        (5, 13),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.4,
+        (255, 128, 0),
+        thickness=1,
+    )
+    if instance_id is not None and instance_center is not None:
+        cv2.putText(future_displacement_label, f"{instance_id}", instance_center, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 128, 0), thickness=1)
+
+    backward_flow = draw_flows(backward_flow.numpy())
+    cv2.putText(backward_flow, "backward_flow", (5, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 128, 0), thickness=1)
+    if instance_id is not None and instance_center is not None:
+        cv2.putText(backward_flow, f"{instance_id}", instance_center, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 128, 0), thickness=1)
+
+    canvas = np.vstack(
+        [instance_img, warped_instance_seg, center_label, offset_label, future_displacement_label, backward_flow]
+    )
+
+    cv2.imwrite("instance_mask.png", cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
+
+    return canvas
+
 def convert_instance_mask_to_center_and_offset_label_with_warper_forfistr(
     instance_img,
     future_egomotion,
@@ -248,12 +335,27 @@ def convert_instance_mask_to_center_and_offset_label_with_warper_forfistr(
                     delta_y = warped_yc - prev_yc
                     future_displacement_label[t - 1, 0, prev_mask] = delta_x
                     future_displacement_label[t - 1, 1, prev_mask] = delta_y
-                    backward_flow[t-1, 0, instance_mask] = -1 * delta_x
+                    backward_flow[t-1, 0, instance_mask] = -1 * delta_x # todo: backward_flow[t, 0, instance_mask], as backward flow is the flow from t to t-1, .
                     backward_flow[t-1, 1, instance_mask] = -1 * delta_y
 
             prev_xc = xc
             prev_yc = yc
             prev_mask = instance_mask
+
+        # visualize_instance_mask(
+        #     instance_img,
+        #     warped_instance_seg,
+        #     center_label,
+        #     offset_label,
+        #     future_displacement_label,
+        #     backward_flow,
+        #     (xc.item(), yc.item()),
+        #     instance_id,
+        # )
+
+    visualize_instance_mask(
+        instance_img, warped_instance_seg, center_label, offset_label, future_displacement_label, backward_flow
+    )
 
     return center_label, offset_label, future_displacement_label, backward_flow, warped_instance_seg
 

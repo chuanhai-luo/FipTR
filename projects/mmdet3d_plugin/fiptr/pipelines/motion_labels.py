@@ -215,15 +215,15 @@ class ConvertMotionLabelsFistr(object):
             if gt_bboxes_3d is None:
                 # for invalid samples
                 segmentation = np.ones(
-                    (self.bev_dimension[1], self.bev_dimension[0])) * self.ignore_index
+                    (self.bev_dimension[1], self.bev_dimension[0])) * self.ignore_index # all 255
                 instance = np.ones(
-                    (self.bev_dimension[1], self.bev_dimension[0])) * self.ignore_index
+                    (self.bev_dimension[1], self.bev_dimension[0])) * self.ignore_index # all 255
             else:
                 # for valid samples
                 segmentation = np.zeros(
-                    (self.bev_dimension[1], self.bev_dimension[0]))
+                    (self.bev_dimension[1], self.bev_dimension[0])) # all 0
                 instance = np.zeros(
-                    (self.bev_dimension[1], self.bev_dimension[0]))
+                    (self.bev_dimension[1], self.bev_dimension[0])) # all 0
                 
                 if self.filter_bev_range:
                     mask = gt_bboxes_3d.in_range_bev(self.bev_range)
@@ -250,9 +250,9 @@ class ConvertMotionLabelsFistr(object):
                 # valid sample and has objects
                 if len(gt_bboxes_3d.tensor) > 0:
                     bbox_corners = gt_bboxes_3d.corners[:, [
-                        0, 3, 7, 4], :2].numpy()
+                        0, 3, 7, 4], :2].numpy() # bottom corners
                     bbox_corners = np.round(
-                        (bbox_corners - self.bev_start_position[:2] + self.bev_resolution[:2] / 2.0) / self.bev_resolution[:2]).astype(np.int32)
+                        (bbox_corners - self.bev_start_position[:2] + self.bev_resolution[:2] / 2.0) / self.bev_resolution[:2]).astype(np.int32) # bottom corners in bev grid
 
                     for index, instance_token in enumerate(instance_tokens):
                         if instance_token not in instance_map:
@@ -334,6 +334,16 @@ class ConvertMotionLabelsFistr(object):
         else:
             gt_masks = torch.from_numpy(np.stack(list(gt_masks.values()), axis = 0))
 
+        self.visualize_motion_label(
+            segmentations,
+            instances,
+            gt_masks,
+            instance_centerness,
+            instance_offset,
+            instance_flow,
+            instance_backward_flow,
+        )
+
         results.update({
             'motion_segmentation': segmentations,
             'motion_instance': instances,
@@ -345,6 +355,92 @@ class ConvertMotionLabelsFistr(object):
         })
 
         return results
+
+    def visualize_motion_label(
+        self,
+        segmentations,
+        instances,
+        gt_masks,
+        instance_centerness,
+        instance_offset,
+        instance_flow,
+        instance_backward_flow,
+    ):
+        segmentations = np.hstack([img for img in segmentations.numpy()])
+        segmentations = cv2.normalize(
+            segmentations, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U
+        )
+        segmentations = np.stack((segmentations,) * 3, axis=-1)
+        cv2.putText(segmentations, "segmentations", (5, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 128, 0), thickness=1)
+
+        instances = np.hstack([img for img in instances.numpy()])
+        instances = cv2.normalize(instances, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+        instances = np.stack((instances,) * 3, axis=-1)
+        cv2.putText(instances, "instances", (5, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 128, 0), thickness=1)
+
+        instance_centerness = np.hstack([img[0] for img in instance_centerness.numpy()])
+        instance_centerness = cv2.normalize(
+            instance_centerness, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U
+        )
+        instance_centerness = np.stack((instance_centerness,) * 3, axis=-1)
+        cv2.putText(
+            instance_centerness,
+            "instance_centerness",
+            (5, 13),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            (255, 128, 0),
+            thickness=1,
+        )
+
+        def draw_flows(flow_maps):
+            flow_imgs = []
+
+            for flow_map in flow_maps:
+                flow_img = np.full((flow_map.shape[1], flow_map.shape[2], 3), 255, dtype=np.uint8)
+
+                for r in range(flow_img.shape[0]):
+                    for c in range(flow_img.shape[1]):
+                        flow = flow_map[:, r, c]
+                        if np.all(flow == 255).all() or np.all(flow == 0):
+                            continue
+
+                        start = (c, r)
+                        end = (int(c + flow[0]), int(r + flow[1]))
+                        cv2.arrowedLine(flow_img, start, end, (0, 255, 0), 1)
+
+                flow_imgs.append(flow_img)
+
+            return np.hstack(flow_imgs)
+
+        instance_offset = draw_flows(instance_offset.numpy())
+        cv2.putText(
+            instance_offset, "instance_offset", (5, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 128, 0), thickness=1
+        )
+
+        instance_flow = draw_flows(np.concatenate((instance_flow.numpy(), np.zeros((1, 2, 200, 200))), axis=0))
+        cv2.putText(instance_flow, "instance_flow", (5, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 128, 0), thickness=1)
+
+        instance_backward_flow = draw_flows(
+            np.concatenate((instance_backward_flow.numpy(), np.zeros((1, 2, 200, 200))), axis=0)
+        )
+        cv2.putText(
+            instance_backward_flow,
+            "instance_backward_flow",
+            (5, 13),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            (255, 128, 0),
+            thickness=1,
+        )
+
+        canvas = np.vstack(
+            [segmentations, instances, instance_centerness, instance_offset, instance_flow, instance_backward_flow]
+        )
+
+        cv2.imwrite("motion_label.png", cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
+
+        return canvas
 
     def center_offset_flow(self, instance_img, num_instances): # TODO 没有用ignore，静态地方就预测静态
         seq_len, h, w = instance_img.shape
