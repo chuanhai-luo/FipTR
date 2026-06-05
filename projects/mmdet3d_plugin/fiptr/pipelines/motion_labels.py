@@ -7,8 +7,13 @@ import pdb
 
 from ..dense_heads.map_head import calculate_birds_eye_view_parameters
 from mmdet.datasets.builder import PIPELINES
-from ..utils.instance import convert_instance_mask_to_center_and_offset_label, convert_instance_mask_to_center_and_offset_label_with_warper
-from ..utils.instance import convert_instance_mask_to_center_and_offset_label_with_warper_forfistr
+from ..utils.instance import (
+    flip_rotate_image,
+    draw_flows,
+    convert_instance_mask_to_center_and_offset_label,
+    convert_instance_mask_to_center_and_offset_label_with_warper,
+    convert_instance_mask_to_center_and_offset_label_with_warper_forfistr
+)
 from ..utils.warper import FeatureWarper
 
 import pdb
@@ -207,6 +212,10 @@ class ConvertMotionLabelsFistr(object):
         # 对于 invalid frame: 所有 label 均为 255
         # 对于 valid frame: seg & instance 背景是 0，其它背景为255
 
+        lidar2ego_rt = np.eye(4)
+        lidar2ego_rt[:3, :3] = results["lidar2ego_rots"]
+        lidar2ego_rt[:3, -1] = results["lidar2ego_trans"]
+
         for frame_index in range(num_frame):
             gt_bboxes_3d, gt_labels_3d = all_gt_bboxes_3d[frame_index], all_gt_labels_3d[frame_index]
             instance_tokens = all_instance_tokens[frame_index]
@@ -294,8 +303,10 @@ class ConvertMotionLabelsFistr(object):
             subtract_egomotion=True,
             warper=self.warper,
             bev_transform=bev_transform,
+            sample_idx=results["sample_idx"],
         )
 
+        # 将未来4帧全部warp回当前帧的坐标系下，得到每一帧的语义分割和实例分割
         warped_semantic_seg = self.warper.cumulative_warp_features_reverse(
             segmentations.float().unsqueeze(0).unsqueeze(2), # 1 5 1 200 200
             future_egomotions.unsqueeze(0), # 1 7 6
@@ -334,15 +345,14 @@ class ConvertMotionLabelsFistr(object):
         else:
             gt_masks = torch.from_numpy(np.stack(list(gt_masks.values()), axis = 0))
 
-        self.visualize_motion_label(
-            segmentations,
-            instances,
-            gt_masks,
-            instance_centerness,
-            instance_offset,
-            instance_flow,
-            instance_backward_flow,
-        )
+        # self.visualize_motion_label(
+        #     segmentations,
+        #     instances,
+        #     gt_masks,
+        #     instance_flow,
+        #     instance_backward_flow,
+        #     sample_idx=results["sample_idx"],
+        # )
 
         results.update({
             'motion_segmentation': segmentations,
@@ -350,8 +360,8 @@ class ConvertMotionLabelsFistr(object):
             'gt_masks': gt_masks,
             'instance_centerness': instance_centerness,
             'instance_offset': instance_offset,
-            "instance_flow": instance_flow, # 5 * 2 * 200 * 200
-            "gt_backward_flow": instance_backward_flow # 5 * 2 * 200 * 200
+            "instance_flow": instance_flow[:-1], # 5 * 2 * 200 * 200
+            "gt_backward_flow": instance_backward_flow[1:] # 5 * 2 * 200 * 200
         })
 
         return results
@@ -361,31 +371,15 @@ class ConvertMotionLabelsFistr(object):
         segmentations,
         instances,
         gt_masks,
-        instance_centerness,
-        instance_offset,
         instance_flow,
         instance_backward_flow,
+        sample_idx=None,
     ):
-        segmentations = np.hstack([img for img in segmentations.numpy()])
-        segmentations = cv2.normalize(
-            segmentations, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U
-        )
-        segmentations = np.stack((segmentations,) * 3, axis=-1)
-        cv2.putText(segmentations, "segmentations", (5, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 128, 0), thickness=1)
-
-        instances = np.hstack([img for img in instances.numpy()])
-        instances = cv2.normalize(instances, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-        instances = np.stack((instances,) * 3, axis=-1)
-        cv2.putText(instances, "instances", (5, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 128, 0), thickness=1)
-
-        instance_centerness = np.hstack([img[0] for img in instance_centerness.numpy()])
-        instance_centerness = cv2.normalize(
-            instance_centerness, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U
-        )
-        instance_centerness = np.stack((instance_centerness,) * 3, axis=-1)
+        #
+        segmentations = np.hstack([flip_rotate_image(img) for img in segmentations.numpy()])
         cv2.putText(
-            instance_centerness,
-            "instance_centerness",
+            segmentations,
+            "segmentations_in_current_frame",
             (5, 13),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.4,
@@ -393,54 +387,47 @@ class ConvertMotionLabelsFistr(object):
             thickness=1,
         )
 
-        def draw_flows(flow_maps):
-            flow_imgs = []
-
-            for flow_map in flow_maps:
-                flow_img = np.full((flow_map.shape[1], flow_map.shape[2], 3), 255, dtype=np.uint8)
-
-                for r in range(flow_img.shape[0]):
-                    for c in range(flow_img.shape[1]):
-                        flow = flow_map[:, r, c]
-                        if np.all(flow == 255).all() or np.all(flow == 0):
-                            continue
-
-                        start = (c, r)
-                        end = (int(c + flow[0]), int(r + flow[1]))
-                        cv2.arrowedLine(flow_img, start, end, (0, 255, 0), 1)
-
-                flow_imgs.append(flow_img)
-
-            return np.hstack(flow_imgs)
-
-        instance_offset = draw_flows(instance_offset.numpy())
+        #
+        instances_display = np.hstack([flip_rotate_image(img) for img in instances.numpy()])
         cv2.putText(
-            instance_offset, "instance_offset", (5, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 128, 0), thickness=1
+            instances_display,
+            "instances_in_current_frame",
+            (5, 13),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            (255, 128, 0),
+            thickness=1,
         )
 
-        instance_flow = draw_flows(np.concatenate((instance_flow.numpy(), np.zeros((1, 2, 200, 200))), axis=0))
-        cv2.putText(instance_flow, "instance_flow", (5, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 128, 0), thickness=1)
-
-        instance_backward_flow = draw_flows(
-            np.concatenate((instance_backward_flow.numpy(), np.zeros((1, 2, 200, 200))), axis=0)
+        #
+        instance_flow = draw_flows(instance_flow.numpy(), instances.numpy())
+        cv2.putText(
+            instance_flow,
+            "instance_flow_in_current_frame",
+            (20, 50),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.5,
+            (255, 128, 0),
+            thickness=3,
         )
+
+        #
+        instance_backward_flow = draw_flows(instance_backward_flow.numpy(), instances.numpy())
         cv2.putText(
             instance_backward_flow,
-            "instance_backward_flow",
-            (5, 13),
+            "instance_backward_flow_in_current_frame",
+            (20, 50),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.4,
+            1.5,
             (255, 128, 0),
-            thickness=1,
+            thickness=3,
         )
 
-        canvas = np.vstack(
-            [segmentations, instances, instance_centerness, instance_offset, instance_flow, instance_backward_flow]
-        )
+        instance_mask = np.vstack([segmentations, instances_display])
+        instance_flow = np.vstack([instance_flow, instance_backward_flow])
 
-        cv2.imwrite("motion_label.png", cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
-
-        return canvas
+        cv2.imwrite(f"run/debug/{sample_idx}_instance_mask_final.png", cv2.cvtColor(instance_mask, cv2.COLOR_BGR2RGB))
+        cv2.imwrite(f"run/debug/{sample_idx}_instance_flow_final.png", cv2.cvtColor(instance_flow, cv2.COLOR_BGR2RGB))
 
     def center_offset_flow(self, instance_img, num_instances): # TODO 没有用ignore，静态地方就预测静态
         seq_len, h, w = instance_img.shape
@@ -533,13 +520,13 @@ class ConvertMotionLabelsFistr255(ConvertMotionLabelsFistr):
                     delta_y = yc - prev_yc
                     future_displacement_label[t-1, 0, prev_mask] = delta_x
                     future_displacement_label[t-1, 1, prev_mask] = delta_y
-                    backward_flow[t-1, 0, instance_mask] = -1 * delta_x
-                    backward_flow[t-1, 1, instance_mask] = -1 * delta_y
+                    backward_flow[t, 0, instance_mask] = -1 * delta_x
+                    backward_flow[t, 1, instance_mask] = -1 * delta_y
                         
                 prev_xc = xc
                 prev_yc = yc
                 prev_mask = instance_mask
 
         
-        return future_displacement_label[:seq_len -1], backward_flow[:seq_len-1]
+        return future_displacement_label, backward_flow
     

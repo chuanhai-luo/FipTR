@@ -50,10 +50,11 @@ class FeatureWarper(object):
         """
 
         # transform coordinates
-        flow = flow.float().inverse()
+        flow = flow.float().inverse() # 自车运动的逆运动。因为我们想把历史帧的feature map warp到当前帧的坐标系下，所以需要用到历史帧相对于当前帧的逆运动。
         # [b, 2, 3]
-        xy_flow = flow[..., :2, [0, 1, 3]]
+        xy_flow = flow[..., :2, [0, 1, 3]] # 拿到逆运动矩阵中的x, y平面的旋转和平移部分，组成一个2x3的矩阵
         # [h, w, 3, 1]
+        # self.bev_grid 是一个h x w x 2的tensor，表示bev平面上每个像素点的坐标。我们在最后一维上加一个1，变成h x w x 3，这样就可以和2x3的变换矩阵相乘了。
         points = torch.cat(
             (self.bev_grid, torch.ones_like(self.bev_grid)[..., :1]), dim=-1).unsqueeze(-1)
 

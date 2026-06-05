@@ -57,7 +57,7 @@ python setup.py install
 
 Train FipTR
 ```
-zsh tools/dist_train.sh projects/configs/fiptr_lss_tiny/FipTR_LSS_Tiny.py  8
+bash tools/dist_train.sh projects/configs/fiptr_lss_tiny/FipTR_LSS_Tiny.py 1
 ```
 Train FipTR with SyncBN
 ```

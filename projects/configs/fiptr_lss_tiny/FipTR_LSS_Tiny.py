@@ -169,7 +169,7 @@ model = dict(
             type='NMSMultiSegFreeCoder',
             post_center_range=[-61.2, -61.2, -10.0, 61.2, 61.2, 10.0],
             pc_range=point_cloud_range,
-            max_num=300,
+            max_num=30,
             voxel_size=voxel_size,
             num_classes=7,
             seg_threshold=0.35,
@@ -238,18 +238,18 @@ train_pipeline = [
     dict(type='LoadAnnotations3D_MTL', with_bbox_3d=True,
          with_label_3d=True, with_instance_tokens=True),
     # bev-augmentations
-    dict(
-        type='MTLGlobalRotScaleTrans',
-        rot_range=bev_aug_params['rot_range'],
-        scale_ratio_range=bev_aug_params['scale_range'],
-        translation_std=bev_aug_params['trans_std'],
-        update_img2lidar=True),
-    dict(
-        type='MTLRandomFlip3D',
-        sync_2d=False,
-        flip_ratio_bev_horizontal=bev_aug_params['hflip'],
-        flip_ratio_bev_vertical=bev_aug_params['vflip'],
-        update_img2lidar=True),
+    # dict(
+    #     type='MTLGlobalRotScaleTrans',
+    #     rot_range=bev_aug_params['rot_range'],
+    #     scale_ratio_range=bev_aug_params['scale_range'],
+    #     translation_std=bev_aug_params['trans_std'],
+    #     update_img2lidar=True),
+    # dict(
+    #     type='MTLRandomFlip3D',
+    #     sync_2d=False,
+    #     flip_ratio_bev_horizontal=bev_aug_params['hflip'],
+    #     flip_ratio_bev_vertical=bev_aug_params['vflip'],
+    #     update_img2lidar=True),
 
     # convert motion labels
     dict(type='ConvertMotionLabelsFistr255', grid_conf=motion_grid_conf, only_vehicle=True, pcd_range=point_cloud_range),
@@ -257,7 +257,7 @@ train_pipeline = [
     # bundle & collect
     dict(type='DefaultFormatBundle3D', class_names=class_names),
     dict(type='Collect3D',
-         keys=['img_inputs', 'gt_bboxes_3d', 'gt_labels_3d',  'future_egomotions', 'aug_transform', 'img_is_valid',
+         keys=['img_inputs', 'gt_bboxes_3d', 'gt_labels_3d',  'future_egomotions', 'img_is_valid',
                'motion_segmentation', 'motion_instance','instance_flow', 'has_invalid_frame', 'gt_masks', 'gt_backward_flow'],
          meta_keys=('filename', 'ori_shape', 'img_shape', 'lidar2img',
                     'depth2img', 'cam2img', 'pad_shape', 'lidar2ego_rots', 'lidar2ego_trans',

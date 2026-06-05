@@ -5,6 +5,7 @@ import torchvision
 from PIL import Image
 import numpy as np
 import os
+import cv2
 import pyquaternion
 import imageio
 
@@ -142,6 +143,7 @@ class LoadMultiViewImageFromFiles_MTL(object):
     def get_img_inputs(self, results, specify_resize=None, specify_flip=None):
         img_infos = results['img_info']
 
+        original_imgs = []
         imgs = []
         rots = []
         trans = []
@@ -157,6 +159,7 @@ class LoadMultiViewImageFromFiles_MTL(object):
                     specify_resize=specify_resize, specify_flip=specify_flip)
 
         for frame_id, img_info in enumerate(img_infos):
+            original_imgs.append({})
             imgs.append([])
             rots.append([])
             trans.append([])
@@ -223,12 +226,15 @@ class LoadMultiViewImageFromFiles_MTL(object):
                 post_tran[:2] = post_tran2
                 post_rot[:2, :2] = post_rot2
 
+                original_imgs[frame_id][cam] = img
                 imgs[frame_id].append(normalize_img(img))
                 intrins[frame_id].append(intrin)
                 rots[frame_id].append(rot)
                 trans[frame_id].append(tran)
                 post_rots[frame_id].append(post_rot)
                 post_trans[frame_id].append(post_tran)
+
+        # self.visualize_cams(original_imgs, sample_idx=results["sample_idx"])
 
         # [num_seq, num_cam, ...]
         imgs = torch.stack([torch.stack(x, dim=0) for x in imgs], dim=0)
@@ -241,6 +247,47 @@ class LoadMultiViewImageFromFiles_MTL(object):
                                  for x in post_trans], dim=0)
 
         return imgs, rots, trans, intrins, post_rots, post_trans
+
+    def visualize_cams(self, original_imgs, sample_idx=None):
+        def downsample(img, factor=1.5):
+            w, h = img.size
+            img = img.resize((int(w // factor), int(h // factor)), resample=Image.Resampling.LANCZOS)
+
+            img = np.array(img)
+            img = cv2.copyMakeBorder(img, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=(255, 255, 255))
+            return img
+
+        canvas = []
+        for imgs in original_imgs:
+            imgs = np.hstack(
+                (
+                    np.vstack(
+                        (
+                            downsample(imgs["CAM_FRONT_LEFT"]),
+                            downsample(imgs["CAM_BACK_LEFT"]),
+                        )
+                    ),
+                    np.vstack(
+                        (
+                            downsample(imgs["CAM_FRONT"]),
+                            downsample(imgs["CAM_BACK"]),
+                        )
+                    ),
+                    np.vstack(
+                        (
+                            downsample(imgs["CAM_FRONT_RIGHT"]),
+                            downsample(imgs["CAM_BACK_RIGHT"]),
+                        )
+                    ),
+                )
+            )
+            imgs = cv2.copyMakeBorder(imgs, 3, 3, 0, 0, cv2.BORDER_CONSTANT, value=(0, 0, 0))
+            canvas.append(imgs)
+
+        canvas = np.vstack(canvas)
+        cv2.imwrite(f"run/debug/{sample_idx}_cams.png", cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
+
+        return canvas
 
     def __call__(self, results):
         if (not self.is_train) and self.test_time_augmentation:

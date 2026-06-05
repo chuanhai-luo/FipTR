@@ -1,5 +1,6 @@
 from typing import Tuple
 import cv2
+from PIL import Image
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -7,6 +8,79 @@ from scipy.optimize import linear_sum_assignment
 from .geometry import mat2pose_vec, pose_vec2mat, warp_features
 
 import pdb
+
+INSTANCE_COLOURS = np.asarray([
+    [255, 255, 255],
+    [255, 179, 0],
+    [128, 62, 117],
+    [255, 104, 0],
+    [166, 189, 215],
+    [193, 0, 32],
+    [206, 162, 98],
+    [129, 112, 102],
+    [0, 125, 52],
+    [246, 118, 142],
+    [0, 83, 138],
+    [255, 122, 92],
+    [83, 55, 122],
+    [255, 142, 0],
+    [179, 40, 81],
+    [244, 200, 0],
+    [127, 24, 13],
+    [147, 170, 0],
+    [89, 51, 21],
+    [241, 58, 19],
+    [35, 44, 22],
+    [112, 224, 255],
+    [70, 184, 160],
+    [153, 0, 255],
+    [71, 255, 0],
+    [255, 0, 163],
+    [255, 204, 0],
+    [0, 255, 235],
+    [255, 0, 235],
+    [255, 0, 122],
+    [255, 245, 0],
+    [10, 190, 212],
+    [214, 255, 0],
+    [0, 204, 255],
+    [20, 0, 255],
+    [255, 255, 0],
+    [0, 153, 255],
+    [0, 255, 204],
+    [41, 255, 0],
+    [173, 0, 255],
+    [0, 245, 255],
+    [71, 0, 255],
+    [0, 255, 184],
+    [0, 92, 255],
+    [184, 255, 0],
+    [255, 214, 0],
+    [25, 194, 194],
+    [92, 0, 255],
+    [220, 220, 220],
+    [255, 9, 92],
+    [112, 9, 255],
+    [8, 255, 214],
+    [255, 184, 6],
+    [10, 255, 71],
+    [255, 41, 10],
+    [7, 255, 255],
+    [224, 255, 8],
+    [102, 8, 255],
+    [255, 61, 6],
+    [255, 194, 7],
+    [0, 255, 20],
+    [255, 8, 41],
+    [255, 5, 153],
+    [6, 51, 255],
+    [235, 12, 255],
+    [160, 150, 20],
+    [0, 163, 255],
+    [140, 140, 140],
+    [250, 10, 15],
+    [20, 255, 0],
+])
 
 def convert_instance_mask_to_center_and_offset_label(instance_img, future_egomotion, num_instances, ignore_index=255, subtract_egomotion=True, sigma=3, spatial_extent=None):
 
@@ -168,6 +242,66 @@ def convert_instance_mask_to_center_and_offset_label_with_warper(
 
     return center_label, offset_label, future_displacement_label
 
+def flip_rotate_image(image, normalize=True):
+    if normalize:
+        image = cv2.normalize(image, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+
+    if len(image.shape) == 2:
+        image = np.stack((image,) * 3, axis=-1)
+
+    image = Image.fromarray(image)
+    image = image.transpose(Image.FLIP_TOP_BOTTOM)
+    image = image.transpose(Image.ROTATE_90)
+
+    return np.array(image)
+
+def draw_flows(flow_maps, instance_img, scale=5):
+    flow_imgs = []
+
+    for i,flow_map in enumerate(flow_maps):
+        canvas = np.full((instance_img[i].shape[0], instance_img[i].shape[1], 3), 255, dtype=np.uint8)
+
+        for instance_id in np.unique(instance_img[i]):
+            mask = instance_img[i] == instance_id
+            canvas[mask] = INSTANCE_COLOURS[instance_id % len(INSTANCE_COLOURS)]
+
+        canvas = cv2.resize(canvas, (canvas.shape[1] * scale, canvas.shape[0] * scale), interpolation=cv2.INTER_NEAREST)
+
+        # draw cross line in center of canvas
+        cv2.line(
+            canvas, (canvas.shape[1] // 2, 0), (canvas.shape[1] // 2, canvas.shape[0]), (128, 128, 128), thickness=1
+        )
+        cv2.line(
+            canvas, (0, canvas.shape[0] // 2), (canvas.shape[1], canvas.shape[0] // 2), (128, 128, 128), thickness=1
+        )
+
+        #
+        for r in range(0, flow_map.shape[1], 2):
+            for c in range(0, flow_map.shape[2], 2):
+                flow = flow_map[:, r, c].copy()
+                if np.all(flow == 255) or np.all(flow == 0):
+                    continue
+
+                flow[0], flow[1] = flow[1], flow[0] # be very careful, this might be a source of bug
+                flow *= scale
+                start = np.array([c, r]) * scale
+                end = start + flow
+                cv2.arrowedLine(
+                    canvas,
+                    start.astype(np.int32),
+                    end.astype(np.int32),
+                    (0, 0, 0),
+                    thickness=1,
+                    tipLength=0.2,
+                    line_type=cv2.LINE_AA,
+                )
+
+        canvas = flip_rotate_image(canvas, normalize=False)
+        canvas = cv2.copyMakeBorder(canvas, 2, 2, 2, 2, borderType=cv2.BORDER_CONSTANT, value=[0, 0, 0])
+        flow_imgs.append(canvas)
+
+    return np.hstack(flow_imgs)
+
 def visualize_instance_mask(
     instance_img,
     warped_instance_seg,
@@ -175,86 +309,50 @@ def visualize_instance_mask(
     offset_label,
     future_displacement_label,
     backward_flow,
-    instance_center=None,
-    instance_id=None,
+    sample_idx,
 ):
-    instance_img = np.hstack([img for img in instance_img.numpy()])
-    instance_img = cv2.normalize(instance_img, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-    instance_img = np.stack((instance_img,) * 3, axis=-1)
-    cv2.putText(instance_img, "instance_img", (5, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 128, 0), thickness=1)
-    if instance_id is not None and instance_center is not None:
-        cv2.putText(instance_img, f"{instance_id}", instance_center, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 128, 0), thickness=1)
+    #
+    instance_img_display = np.hstack([flip_rotate_image(img) for img in instance_img.numpy()])
+    cv2.putText(instance_img_display, "instance_img", (5, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 128, 0), thickness=1)
 
+    #
     warped_instance_seg = np.hstack(
-        [warped_instance_seg[i].numpy() for i in range(1, 5)] + [np.zeros(warped_instance_seg[1].shape, dtype=np.uint8)]
+        [flip_rotate_image(warped_instance_seg[i].numpy()) for i in range(1, 5)]
+        + [np.zeros((warped_instance_seg[1].shape[0], warped_instance_seg[1].shape[1], 3), dtype=np.uint8)]
     )
-    warped_instance_seg = cv2.normalize(
-        warped_instance_seg, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U
-    )
-    warped_instance_seg = np.stack((warped_instance_seg,) * 3, axis=-1)
     cv2.putText(
         warped_instance_seg, "warped_instance_seg", (5, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 128, 0), thickness=1
     )
-    if instance_id is not None and instance_center is not None:
-        cv2.putText(warped_instance_seg, f"{instance_id}", instance_center, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 128, 0), thickness=1)
 
-    center_label = np.hstack([img[0] for img in center_label.numpy()])
-    center_label = cv2.normalize(center_label, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-    center_label = np.stack((center_label,) * 3, axis=-1)
+    #
+    center_label = np.hstack([flip_rotate_image(img[0]) for img in center_label.numpy()])
     cv2.putText(center_label, "center_label", (5, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 128, 0), thickness=1)
-    if instance_id is not None and instance_center is not None:
-        cv2.putText(center_label, f"{instance_id}", instance_center, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 128, 0), thickness=1)
 
-    def draw_flows(flow_maps):
-        flow_imgs = []
+    #
+    offset_label = draw_flows(offset_label.numpy(), instance_img.numpy())
+    cv2.putText(offset_label, "offset_label", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 128, 0), thickness=3)
 
-        for flow_map in flow_maps:
-            flow_img = np.full((flow_map.shape[1], flow_map.shape[2], 3), 255, dtype=np.uint8)
-
-            for r in range(flow_img.shape[0]):
-                for c in range(flow_img.shape[1]):
-                    flow = flow_map[:, r, c]
-                    if np.all(flow == 255).all() or np.all(flow == 0):
-                        continue
-
-                    start = (c, r)
-                    end = (int(c + flow[0]), int(r + flow[1]))
-                    cv2.arrowedLine(flow_img, start, end, (0, 255, 0), 1)
-
-            flow_imgs.append(flow_img)
-
-        return np.hstack(flow_imgs)
-
-    offset_label = draw_flows(offset_label.numpy())
-    cv2.putText(offset_label, "offset_label", (5, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 128, 0), thickness=1)
-    if instance_id is not None and instance_center is not None:
-        cv2.putText(offset_label, f"{instance_id}", instance_center, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 128, 0), thickness=1)
-
-    future_displacement_label = draw_flows(future_displacement_label.numpy())
+    #
+    future_displacement_label = draw_flows(future_displacement_label.numpy(), instance_img.numpy())
     cv2.putText(
         future_displacement_label,
         "future_displacement_label",
-        (5, 13),
+        (20, 50),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.4,
+        1.5,
         (255, 128, 0),
-        thickness=1,
-    )
-    if instance_id is not None and instance_center is not None:
-        cv2.putText(future_displacement_label, f"{instance_id}", instance_center, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 128, 0), thickness=1)
-
-    backward_flow = draw_flows(backward_flow.numpy())
-    cv2.putText(backward_flow, "backward_flow", (5, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 128, 0), thickness=1)
-    if instance_id is not None and instance_center is not None:
-        cv2.putText(backward_flow, f"{instance_id}", instance_center, cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 128, 0), thickness=1)
-
-    canvas = np.vstack(
-        [instance_img, warped_instance_seg, center_label, offset_label, future_displacement_label, backward_flow]
+        thickness=3,
     )
 
-    cv2.imwrite("instance_mask.png", cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
+    #
+    backward_flow = draw_flows(backward_flow.numpy(), instance_img.numpy())
+    cv2.putText(backward_flow, "backward_flow", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 128, 0), thickness=3)
 
-    return canvas
+    instance_mask = np.vstack([instance_img_display, warped_instance_seg, center_label])
+    instance_flow = np.vstack([offset_label, future_displacement_label, backward_flow])
+
+    cv2.imwrite(f"run/debug/{sample_idx}_instance_mask.png", cv2.cvtColor(instance_mask, cv2.COLOR_BGR2RGB))
+    cv2.imwrite(f"run/debug/{sample_idx}_instance_flow.png", cv2.cvtColor(instance_flow, cv2.COLOR_BGR2RGB))
 
 def convert_instance_mask_to_center_and_offset_label_with_warper_forfistr(
     instance_img,
@@ -265,6 +363,7 @@ def convert_instance_mask_to_center_and_offset_label_with_warper_forfistr(
     sigma=3,
     warper=None,
     bev_transform=None,
+    sample_idx=None,
 ):
 
     seq_len, h, w = instance_img.shape
@@ -305,6 +404,8 @@ def convert_instance_mask_to_center_and_offset_label_with_warper_forfistr(
         prev_xc = None
         prev_yc = None
         prev_mask = None
+        
+        instance_center = []
         for t in range(seq_len):
             instance_mask = (instance_img[t] == instance_id)
             if instance_mask.sum() == 0:
@@ -317,6 +418,8 @@ def convert_instance_mask_to_center_and_offset_label_with_warper_forfistr(
             # the Bird-Eye-View center of the instance
             xc = x[instance_mask].mean().round().long()
             yc = y[instance_mask].mean().round().long()
+
+            instance_center.append((xc.item(), yc.item()))
 
             off_x = xc - x
             off_y = yc - y
@@ -335,8 +438,8 @@ def convert_instance_mask_to_center_and_offset_label_with_warper_forfistr(
                     delta_y = warped_yc - prev_yc
                     future_displacement_label[t - 1, 0, prev_mask] = delta_x
                     future_displacement_label[t - 1, 1, prev_mask] = delta_y
-                    backward_flow[t-1, 0, instance_mask] = -1 * delta_x # todo: backward_flow[t, 0, instance_mask], as backward flow is the flow from t to t-1, .
-                    backward_flow[t-1, 1, instance_mask] = -1 * delta_y
+                    backward_flow[t, 0, instance_mask] = -1 * delta_x
+                    backward_flow[t, 1, instance_mask] = -1 * delta_y
 
             prev_xc = xc
             prev_yc = yc
@@ -349,13 +452,17 @@ def convert_instance_mask_to_center_and_offset_label_with_warper_forfistr(
         #     offset_label,
         #     future_displacement_label,
         #     backward_flow,
-        #     (xc.item(), yc.item()),
-        #     instance_id,
         # )
 
-    visualize_instance_mask(
-        instance_img, warped_instance_seg, center_label, offset_label, future_displacement_label, backward_flow
-    )
+    # visualize_instance_mask(
+    #     instance_img,
+    #     warped_instance_seg,
+    #     center_label,
+    #     offset_label,
+    #     future_displacement_label,
+    #     backward_flow,
+    #     sample_idx,
+    # )
 
     return center_label, offset_label, future_displacement_label, backward_flow, warped_instance_seg
 

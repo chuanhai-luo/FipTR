@@ -1,13 +1,14 @@
 import torch
-
+import numpy as np
 from mmdet.models import DETECTORS
 from mmdet3d.models.detectors.mvx_two_stage import MVXTwoStageDetector
 from mmdet3d.models import builder
-
+import cv2
 import pdb
 import time
 import swanlab
 from mmcv.runner import auto_fp16, force_fp32
+from projects.mmdet3d_plugin.tools.visualizer import visualize_motion, visualize_flow, visualize_det, visualize_bev
 
 def bbox3d2result(bboxes, scores, labels, segmentation = None, instance = None, seg = False, attrs=None):
     """Convert detection results to a list of numpy arrays.
@@ -132,14 +133,17 @@ class FIPTR_LSS(MVXTwoStageDetector):
         else:
             return x
 
-    def forward_pts_train(self,
-                          pts_feats,
-                          img_metas,
-                          gt_bboxes_3d,
-                          gt_labels_3d, 
-                          gt_masks, 
-                          gt_flow,
-                          ):
+    def forward_pts_train(
+        self,
+        pts_feats,
+        img_metas,
+        gt_bboxes_3d,
+        gt_labels_3d,
+        gt_masks,
+        gt_flow,
+        gt_segmentation,
+        gt_instance,
+    ):
         """Forward function for point cloud branch.
 
         Args:
@@ -163,7 +167,88 @@ class FIPTR_LSS(MVXTwoStageDetector):
         loss_inputs = [gt_bboxes_3d, gt_labels_3d, outs, gt_masks, gt_flow]
         losses = self.pts_bbox_head.loss(*loss_inputs)
 
+        #
+        if self.global_step % 100 == 0:
+            self.visualize_train(outs, gt_flow, img_metas, gt_segmentation, gt_instance, gt_bboxes_3d, gt_labels_3d)
+
         return losses
+
+    def visualize_train(self, outs, gt_flow, img_metas, gt_segmentation, gt_instance, gt_bboxes_3d, gt_labels_3d):
+        outs = {key:value.detach().cpu() for key,value in outs.items()}
+
+        pred_flows = outs["predict_flows"]
+        gt_flows = torch.flip(gt_flow, dims=[2])
+        flow_map = visualize_flow(pred_flows, gt_flows, img_metas)
+
+        self.logger.log({"flow_map": swanlab.Image(flow_map)}, step=self.global_step)
+
+        outs = self.decode_bboxes(outs, img_metas, rescale=True)
+        outs = self.transform_bboxes(outs, img_metas)
+
+        sample_idx = img_metas[0]["sample_idx"]
+
+        motion_map = visualize_motion(
+            {
+                "segmentation": gt_segmentation[0].unsqueeze(0),
+                "instance": gt_instance[0].unsqueeze(0),
+            },
+            {
+                "segmentation": outs[0]["pts_bbox"]["segmentation"].unsqueeze(0),
+                "instance": outs[0]["pts_bbox"]["instance"].unsqueeze(0),
+            },
+            model="fistr",
+            sample_idx=img_metas[0]["sample_idx"],
+        )
+
+        images_bboxes = visualize_det(
+            img_metas=img_metas[0],
+            bbox_results=outs[0],
+            gt_bboxes=gt_bboxes_3d[0],
+            gt_labels=gt_labels_3d[0],
+            vis_thresh=0,
+        )
+
+        canvas = np.hstack(
+            (
+                np.vstack(
+                    (
+                        np.full((100, 400, 3), 0, dtype=np.uint8),
+                        images_bboxes["CAM_FRONT_LEFT"],
+                        images_bboxes["CAM_BACK_LEFT"],
+                        np.full((100, 400, 3), 0, dtype=np.uint8),
+                    )
+                ),
+                np.vstack(
+                    (
+                        images_bboxes["CAM_FRONT"],
+                        motion_map,
+                        images_bboxes["CAM_BACK"],
+                    )
+                ),
+                np.vstack(
+                    (
+                        np.full((100, 400, 3), 0, dtype=np.uint8),
+                        images_bboxes["CAM_FRONT_RIGHT"],
+                        images_bboxes["CAM_BACK_RIGHT"],
+                        np.full((100, 400, 3), 0, dtype=np.uint8),
+                    )
+                ),
+            )
+        )
+
+        bev_map = visualize_bev(
+            canvas.shape[0],
+            img_metas=img_metas[0],
+            bbox_results=outs[0],
+            gt_bboxes=gt_bboxes_3d[0],
+            gt_labels=gt_labels_3d[0],
+            vis_thresh=0.,
+        )
+        canvas = np.hstack((canvas, bev_map))
+
+        cv2.putText(canvas, sample_idx, (5, 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+
+        self.logger.log({"motion_map": swanlab.Image(canvas)}, step=self.global_step)
 
     @auto_fp16(apply_to=('img_inputs'))
     def forward_train(self,
@@ -178,6 +263,9 @@ class FIPTR_LSS(MVXTwoStageDetector):
                       gt_masks=None,
                       gt_backward_flow=None,
                       has_invalid_frame=None,
+                      motion_segmentation=None,
+                      motion_instance=None,
+                      instance_flow=None,
                       **kwargs):
         """Forward training function.
 
@@ -204,24 +292,37 @@ class FIPTR_LSS(MVXTwoStageDetector):
         Returns:
             dict: Losses of different branches.
         """
+        self.global_step += 1
+
+        start_time = time.perf_counter()
 
         img_feats = self.extract_img_feat(
             img=img_inputs,
             img_metas=img_metas,
             future_egomotion=future_egomotions,
-            aug_transform=aug_transform,
+            aug_transform=aug_transform, # 数据增强时对bboxes执行的变换（rotation、scaling、translation）
             img_is_valid=img_is_valid,
         )
 
-        loss_dict = self.forward_pts_train(img_feats, img_metas, gt_bboxes_3d, gt_labels_3d, gt_masks=gt_masks, gt_flow=gt_backward_flow)
+        loss_dict = self.forward_pts_train(
+            img_feats,
+            img_metas,
+            gt_bboxes_3d,
+            gt_labels_3d,
+            gt_masks=gt_masks,
+            gt_flow=gt_backward_flow,
+            gt_segmentation=motion_segmentation,
+            gt_instance=motion_instance,
+        ) # gt_backward_flow应该只有4帧，因为第一帧没有上一帧，所以没有flow
+
+        end_time = time.perf_counter()
+        time_sec_elapsed = end_time - start_time
 
         loss = {key:value.item() for key,value in loss_dict.items()}
         loss["loss"] = sum(value for value in loss.values())
 
         if self.global_step % 10 == 0:
-            self.logger.log({"loss": loss}, step=self.global_step)
-
-        self.global_step += 1
+            self.logger.log({"iteration": time_sec_elapsed, "loss": loss}, step=self.global_step)
 
         return loss_dict
 
@@ -316,19 +417,35 @@ class FIPTR_LSS(MVXTwoStageDetector):
         bbox_pts = self.simple_test_pts(
             img_feats, img_metas, rescale=rescale, motion_targets=motion_targets)
 
-        bbox_list = [dict() for i in range(len(img_metas))]
-
-        for index, (result_dict, pts_bbox) in enumerate(zip(bbox_list, bbox_pts)):
-            bboxes = pts_bbox["boxes_3d"]
-            img_meta = img_metas[index]
-            lidar2ego_rot, lidar2ego_tran = img_meta['lidar2ego_rots'], img_meta['lidar2ego_trans']
-            bboxes.translate(-lidar2ego_tran)
-            bboxes.rotate(lidar2ego_rot.t().inverse().float())
-            pts_bbox["boxes_3d"] = bboxes
-            result_dict['pts_bbox'] = pts_bbox
+        bbox_list = self.transform_bboxes(bbox_pts, img_metas)
 
         return bbox_list
 
+    def decode_bboxes(self, prediction, img_metas, rescale=False):
+        bbox_list = self.pts_bbox_head.get_bboxes(prediction, img_metas, rescale=rescale)
+        if len(bbox_list[0]) == 5:
+            bbox_results = [
+                bbox3d2result(bboxes, scores, labels, segmentation, instance, seg=True)
+                for bboxes, scores, labels, segmentation, instance in bbox_list
+            ]
+        else:
+            bbox_results = [bbox3d2result(bboxes, scores, labels) for bboxes, scores, labels in bbox_list]
+
+        return bbox_results
+    
+    def transform_bboxes(self, prediction, img_metas):
+        bbox_list = [dict() for i in range(len(img_metas))]
+
+        for index, (result_dict, pts_bbox) in enumerate(zip(bbox_list, prediction)):
+            bboxes = pts_bbox["boxes_3d"]
+            img_meta = img_metas[index]
+            lidar2ego_rot, lidar2ego_tran = img_meta["lidar2ego_rots"], img_meta["lidar2ego_trans"]
+            bboxes.translate(-lidar2ego_tran)
+            bboxes.rotate(lidar2ego_rot.t().inverse().float())
+            pts_bbox["boxes_3d"] = bboxes
+            result_dict["pts_bbox"] = pts_bbox
+
+        return bbox_list
 
     def simple_test_pts(self, x, img_metas, rescale=False, motion_targets=None):
         """Test function of point cloud branch."""
@@ -339,20 +456,9 @@ class FIPTR_LSS(MVXTwoStageDetector):
         # )
 
         # convert bbox predictions
-        bbox_list = self.pts_bbox_head.get_bboxes(
-            outs, img_metas, rescale=rescale)
-        if len(bbox_list[0]) == 5:
-            bbox_results = [
-                bbox3d2result(bboxes, scores, labels, segmentation, instance, seg=True)
-                for bboxes, scores, labels, segmentation, instance in bbox_list
-            ]
-        else:
-            bbox_results = [
-                bbox3d2result(bboxes, scores, labels)
-                for bboxes, scores, labels in bbox_list
-            ]
+        outs = self.decode_bboxes(outs, img_metas, rescale=rescale)
 
-        return bbox_results
+        return outs
 
     def aug_test(self, img_metas, img=None, future_egomotions=None,
                  rescale=False, motion_targets=None, img_is_valid=None):

@@ -345,7 +345,7 @@ class MTLGlobalRotScaleTrans(object):
 
         input_dict['img_inputs'][1][...] = new_transform[..., :3, :3]
         input_dict['img_inputs'][2][...] = new_transform[..., :3, -1]
-        input_dict['aug_transform'] = aug_transforms[0, 0]
+        input_dict['aug_transform'] = aug_transforms[0, 0] # 一个变换，对所有bboxes_3d操作
 
     def __call__(self, input_dict):
         """Private function to rotate, scale and translate bounding boxes and \

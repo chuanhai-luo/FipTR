@@ -7,74 +7,87 @@ import os
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 from mmdet3d.core.visualizer.image_vis import draw_lidar_bbox3d_on_img
-
+from mmdet3d.core.bbox import LiDARInstance3DBoxes
 from ..fiptr.utils.instance import predict_instance_segmentation_and_trajectories as predict_instance_segmentation_and_trajectories_beverse
 from ..fiptr.visualize.motion_visualisation import plot_instance_map
 
-def visualize_flow(pred_flows, gt_flows):
-    if pred_flows is not None:
-        B, T, C, H, W = pred_flows.shape
-    elif gt_flows is not None:
-        B, T, C, H, W = gt_flows.shape
-    else:
-        return None
+def visualize_flow(pred_flows, gt_flows, img_metas):
+    def draw_flow_map(flow_map, is_gt=False, scale=5):
+        C, H, W = flow_map.shape
+        flow_img = np.full((H * scale, W * scale, 3), 255, dtype=np.uint8)
 
-    if pred_flows is not None:
-        pred_flows = pred_flows.detach().cpu().numpy()
-    if gt_flows is not None:
-        gt_flows = gt_flows.detach().cpu().numpy()
-
-    def draw_flow_map(flows, H, W, is_gt=False):
-        flow_map = np.full((H, W, 3), 255, dtype=np.uint8)
-
-        if flows is not None:
-            for h in range(H):
-                for w in range(W):
-                    flow = flows[:, h, w]
-                    if np.linalg.norm(flow) >= 5:
-                        start_point = np.array([w, h])
-                        end_point = start_point + flow
-                        cv2.arrowedLine(
-                            flow_map,
-                            start_point.astype(np.int32),
-                            end_point.astype(np.int32),
-                            (0, 0, 255),
-                            thickness=1,
-                            tipLength=0.2,
-                        )
-        cv2.putText(
-            flow_map,
-            "gt_flow" if is_gt else "pred_flow",
-            (5, 13),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.4,
-            (255, 128, 0),
+        cv2.line(
+            flow_img,
+            (flow_img.shape[1] // 2, 0),
+            (flow_img.shape[1] // 2, flow_img.shape[0]),
+            (128, 128, 128),
             thickness=1,
         )
-        flow_map = cv2.copyMakeBorder(
-            flow_map, 1, 1, 1, 1, borderType=cv2.BORDER_CONSTANT, value=[0, 0, 0]
+        cv2.line(
+            flow_img,
+            (0, flow_img.shape[0] // 2),
+            (flow_img.shape[1], flow_img.shape[0] // 2),
+            (128, 128, 128),
+            thickness=1,
         )
 
-        return flow_map
+        for h in range(0, H, 2):
+            for w in range(0, W, 2):
+                flow = flow_map[:, h, w].copy()
+                if np.all(flow == 255):
+                    continue
 
-    flow_maps = []
+                flow *= scale
+                start = np.array([w, h]) * scale
+                end = start + flow
+                cv2.arrowedLine(
+                    flow_img,
+                    start.astype(np.int32),
+                    end.astype(np.int32),
+                    (255, 0, 0),
+                    thickness=1,
+                    tipLength=0.2,
+                    line_type=cv2.LINE_AA,
+                )
+
+        flow_img = flip_rotate_image(flow_img)
+        flow_img = cv2.copyMakeBorder(flow_img, 1, 1, 1, 1, borderType=cv2.BORDER_CONSTANT, value=[0, 0, 0])
+
+        return flow_img
+
+    B, T, C, H, W = pred_flows.shape
+
+    pred_flows = pred_flows.detach().cpu().numpy()
+    gt_flows = gt_flows.detach().cpu().numpy()
+
     for b in range(B):
+        pred_flow_imgs = []
+        gt_flow_imgs = []
+
         for t in range(T):
-            pred_flow_map = draw_flow_map(
-                pred_flows[b, t] if pred_flows is not None else None, H, W, is_gt=False
-            )
-            gt_flow_map = draw_flow_map(
-                gt_flows[b, t] if gt_flows is not None else None, H, W, is_gt=True
-            )
+            pred_flow_img = draw_flow_map(pred_flows[b, t], is_gt=False)
+            gt_flow_img = draw_flow_map(gt_flows[b, t], is_gt=True)
 
-            flow_map = np.hstack((gt_flow_map, pred_flow_map))
-            flow_maps.append(flow_map)
+            pred_flow_imgs.append(pred_flow_img)
+            gt_flow_imgs.append(gt_flow_img)
 
-    flow_maps = np.vstack(flow_maps)
+        pred_flow_imgs = np.hstack(pred_flow_imgs)
+        cv2.putText(
+            pred_flow_imgs, "pred_flow_imgs", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 128, 0), thickness=3
+        )
 
-    return flow_maps
+        gt_flow_imgs = np.hstack(gt_flow_imgs)
+        cv2.putText(gt_flow_imgs, "gt_flow_imgs", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 128, 0), thickness=3)
 
-def visualize_motion(motion_targets, motion_preds, model = "fistr"):
+        flow_imgs = np.vstack((gt_flow_imgs, pred_flow_imgs))
+
+        # cv2.imwrite(
+        #     f"run/debug/{img_metas[b]['sample_idx']}_loss_flow_maps.png", cv2.cvtColor(flow_imgs, cv2.COLOR_BGR2RGB)
+        # )
+
+        return flow_imgs
+
+def visualize_motion(motion_targets, motion_preds, model = "fistr", sample_idx=None):
     if model == "beverse":
         segmentation_binary = motion_targets['segmentation']
         segmentation = segmentation_binary.new_zeros(
@@ -124,6 +137,8 @@ def visualize_motion(motion_targets, motion_preds, model = "fistr"):
         (128, 128, 128),
         thickness=1,
     )
+
+    # cv2.imwrite(f"run/debug/{sample_idx}_loss_motion_maps.png", cv2.cvtColor(final_image, cv2.COLOR_BGR2RGB))
 
     return final_image
 
@@ -180,64 +195,70 @@ def visualize_bev(
     pred_lidar_boxes = pred_lidar_boxes[pred_score_mask]
     pred_labels = pred_labels[pred_score_mask]
 
-    gt_lidar_boxes = gt_bboxes.data[0][0]
-    gt_labels = gt_labels.data[0][0]
+    if isinstance(gt_bboxes, LiDARInstance3DBoxes):
+        gt_lidar_boxes = gt_bboxes
+        gt_labels = gt_labels
+    else:
+        gt_lidar_boxes = gt_bboxes.data[0][0]
+        gt_labels = gt_labels.data[0][0]
 
     # gt
-    for label, corners in zip(gt_labels, gt_lidar_boxes.corners):
-        bottom_corners = corners[[0, 3, 4, 7]][:, :2]
-        bottom_corners *= pixels_per_meter
+    if len(gt_labels) != 0:
+        for label, corners in zip(gt_labels, gt_lidar_boxes.corners):
+            bottom_corners = corners[[0, 3, 4, 7]][:, :2]
+            bottom_corners *= pixels_per_meter
 
-        corners_px = np.array(
-            [(int(ego_pos[1] - c[1]), int(ego_pos[0] - c[0])) for c in bottom_corners]
-        )
-        # sort corners
-        corners_px = corners_px[
-            np.argsort(
-                np.arctan2(
-                    corners_px[:, 1] - np.mean(corners_px[:, 1]),
-                    corners_px[:, 0] - np.mean(corners_px[:, 0]),
-                )
+            corners_px = np.array(
+                [(int(ego_pos[1] - c[1]), int(ego_pos[0] - c[0])) for c in bottom_corners]
             )
-        ]
-        cv2.fillConvexPoly(
-            bev_canvas,
-            corners_px,
-            color=(0, 255, 0),
-            lineType=cv2.LINE_AA,
-        )
+            # sort corners
+            corners_px = corners_px[
+                np.argsort(
+                    np.arctan2(
+                        corners_px[:, 1] - np.mean(corners_px[:, 1]),
+                        corners_px[:, 0] - np.mean(corners_px[:, 0]),
+                    )
+                )
+            ]
+            cv2.fillConvexPoly(
+                bev_canvas,
+                corners_px,
+                color=(0, 255, 0),
+                lineType=cv2.LINE_AA,
+            )
 
     # pred
     lidar2ego_rt = np.eye(4)
     lidar2ego_rt[:3, :3] = img_metas["lidar2ego_rots"]
     lidar2ego_rt[:3, -1] = img_metas["lidar2ego_trans"]
 
-    for label, corners in zip(pred_labels, pred_lidar_boxes.corners):
-        ones = np.ones((corners.shape[0], 1))
-        corners = np.concatenate([corners.cpu().numpy(), ones], axis=1)
-        corners = corners @ lidar2ego_rt.T
+    if len(pred_labels) != 0:
+        for label, corners in zip(pred_labels, pred_lidar_boxes.corners):
+            ones = np.ones((corners.shape[0], 1))
+            corners = np.concatenate([corners.cpu().numpy(), ones], axis=1)
+            corners = corners @ lidar2ego_rt.T
 
-        bottom_corners = corners[[0, 3, 4, 7]][:, :2]
-        bottom_corners *= pixels_per_meter
+            bottom_corners = corners[[0, 3, 4, 7]][:, :2]
+            bottom_corners *= pixels_per_meter
 
-        corners_px = np.array(
-            [(int(ego_pos[1] - c[1]), int(ego_pos[0] - c[0])) for c in bottom_corners]
-        )
-        # sort corners
-        corners_px = corners_px[
-            np.argsort(
-                np.arctan2(
-                    corners_px[:, 1] - np.mean(corners_px[:, 1]),
-                    corners_px[:, 0] - np.mean(corners_px[:, 0]),
-                )
+            corners_px = np.array(
+                [(int(ego_pos[1] - c[1]), int(ego_pos[0] - c[0])) for c in bottom_corners]
             )
-        ]
-        cv2.fillConvexPoly(
-            bev_canvas,
-            corners_px,
-            color=(255, 0, 0),
-            lineType=cv2.LINE_AA,
-        )
+            # sort corners
+            corners_px = corners_px[
+                np.argsort(
+                    np.arctan2(
+                        corners_px[:, 1] - np.mean(corners_px[:, 1]),
+                        corners_px[:, 0] - np.mean(corners_px[:, 0]),
+                    )
+                )
+            ]
+            cv2.fillConvexPoly(
+                bev_canvas,
+                corners_px,
+                color=(255, 0, 0),
+                lineType=cv2.LINE_AA,
+            )
 
     return bev_canvas
 
@@ -254,8 +275,12 @@ def visualize_det(img_metas, bbox_results, gt_bboxes, gt_labels, vis_thresh):
     pred_lidar_boxes = pred_lidar_boxes[pred_score_mask]
     pred_labels = pred_labels[pred_score_mask]
 
-    gt_lidar_boxes = gt_bboxes.data[0][0]
-    gt_labels = gt_labels.data[0][0]
+    if isinstance(gt_bboxes, LiDARInstance3DBoxes):
+        gt_lidar_boxes = gt_bboxes
+        gt_labels = gt_labels
+    else:
+        gt_lidar_boxes = gt_bboxes.data[0][0]
+        gt_labels = gt_labels.data[0][0]
 
     gt_bbox_color = (0, 255, 0)
     pred_bbox_color = (255, 0, 0)

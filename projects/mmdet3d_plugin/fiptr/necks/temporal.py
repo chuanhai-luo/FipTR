@@ -123,6 +123,7 @@ class Temporal3DConvModel(BaseModule):
         input_x = x.clone()
         
         # when warping features from temporal frames, the bev-transform should be considered
+        # 将历史两帧的feature map变换到当前帧的坐标系下
         x = self.warper.cumulative_warp_features(
             x, future_egomotion[:, :x.shape[1]],
             mode='bilinear', bev_transform=aug_transform,
@@ -133,7 +134,7 @@ class Temporal3DConvModel(BaseModule):
             input_future_egomotion = future_egomotion[:, :self.receptive_field].contiguous(
             )
             input_future_egomotion = input_future_egomotion.view(
-                b, s, -1, 1, 1).expand(b, s, -1, h, w)
+                b, s, -1, 1, 1).expand(b, s, -1, h, w) # [1,3,6,200,200]
             input_future_egomotion = torch.cat((torch.zeros_like(
                 input_future_egomotion[:, :1]), input_future_egomotion[:, :-1]), dim=1)
             x = torch.cat((x, input_future_egomotion), dim=2)
