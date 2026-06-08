@@ -81,10 +81,6 @@ def visualize_flow(pred_flows, gt_flows, img_metas):
 
         flow_imgs = np.vstack((gt_flow_imgs, pred_flow_imgs))
 
-        # cv2.imwrite(
-        #     f"run/debug/{img_metas[b]['sample_idx']}_loss_flow_maps.png", cv2.cvtColor(flow_imgs, cv2.COLOR_BGR2RGB)
-        # )
-
         return flow_imgs
 
 def visualize_motion(motion_targets, motion_preds, model = "fistr", sample_idx=None):
@@ -365,6 +361,9 @@ def plot_motion(motion_preds, model):
     return vis_image
 
 def predict_instance_segmentation_and_trajectories(output, compute_matched_centers=False, ):
+    """
+    返回instance map和当前帧instance在未来的轨迹（如果compute_matched_centers=True）。instance map的shape为(1, seq_len, H, W)，轨迹是一个字典，key为instance id，value为一个长度为seq_len的列表，每个元素是一个二元组(x, y)，表示该instance在对应帧的中心位置。
+    """
     preds = output['segmentation'].detach()
 
     batch_size, seq_len = preds.shape[:2]

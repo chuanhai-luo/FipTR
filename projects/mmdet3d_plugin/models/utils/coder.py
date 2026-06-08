@@ -175,7 +175,7 @@ class NMSMultiSegFreeCoder(NMSSegFreeCoder):
             self.mask_threshold_time.append(self.mask_threshold_t)
             self.mask_threshold_t *= 1.1
         self.refine = refine
-    def decode_single(self, cls_scores, bbox_preds, seg_masks):
+    def decode_single(self, cls_scores, bbox_preds, seg_masks, gt_num=None):
         """Decode bboxes.
         Args:
             cls_scores (Tensor): Outputs from the classification head, \
@@ -188,6 +188,8 @@ class NMSMultiSegFreeCoder(NMSSegFreeCoder):
             list[dict]: Decoded boxes.
         """
         max_num = self.max_num
+        if gt_num is not None:
+            max_num = gt_num
 
         cls_scores = cls_scores.sigmoid()
         scores, indexs = cls_scores.view(-1).topk(max_num)
@@ -273,7 +275,7 @@ class NMSMultiSegFreeCoder(NMSSegFreeCoder):
                 'support post_center_range is not None for now!')
         return predictions_dict
 
-    def decode(self, preds_dicts):
+    def decode(self, preds_dicts, gt_nums=None):
         """Decode bboxes.
         Args:
             all_cls_scores (Tensor): Outputs from the classification head, \
@@ -286,12 +288,19 @@ class NMSMultiSegFreeCoder(NMSSegFreeCoder):
             list[dict]: Decoded boxes.
         """
         all_cls_scores = preds_dicts['all_cls_scores'][-1] # final dec layer 4 1 150 7
-        all_bbox_preds = preds_dicts['all_bbox_preds'][-1] # 4 1 150 10
+        all_bbox_preds = preds_dicts['all_bbox_preds'][-1] # final dec layer
         all_seg_masks = preds_dicts["all_seg_masks"].permute(1, 2, 0, 3, 4) # 5 1 150 200 200 
         batch_size = all_cls_scores.size()[0]
         predictions_list = []
         for i in range(batch_size):
-            predictions_list.append(self.decode_single(all_cls_scores[i], all_bbox_preds[i], all_seg_masks[:, :, i]))
+            predictions_list.append(
+                self.decode_single(
+                    all_cls_scores[i],
+                    all_bbox_preds[i],
+                    all_seg_masks[:, :, i],
+                    gt_num=gt_nums[i] if len(gt_nums) == batch_size else None,
+                )
+            )
         return predictions_list
 
 
@@ -424,6 +433,10 @@ def predict_instance_segmentation_and_trajectories(
                                     ins_sigmoid,
                                     vehicles_id=1,
                                     ):
+    """
+    foreground_masks: [5, 200, 200] in [0, 1] 背景前景的mask。
+    ins_sigmoid: [500, 5, 200, 200] 在第一个维度上选score最大的index作为instance id生成instance map，instance id从1开始，0为背景。
+    """
     if foreground_masks.dim() == 5 and foreground_masks.shape[2] == 1:
         foreground_masks = foreground_masks.squeeze(2)  # [t, h, w]
     foreground_masks = foreground_masks == vehicles_id  # [t, h, w]  Only these places have foreground id

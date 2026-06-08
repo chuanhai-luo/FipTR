@@ -361,5 +361,5 @@ lr_config = dict(
     min_lr_ratio=1e-3)
 
 optimizer_config = dict(grad_clip=dict(max_norm=35, norm_type=2))
-runner = dict(type='EpochBasedRunner', max_epochs=20)
+runner = dict(type='EpochBasedRunner', max_epochs=200)
 checkpoint_config = dict(interval=5)

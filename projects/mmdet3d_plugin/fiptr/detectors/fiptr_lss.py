@@ -6,7 +6,7 @@ from mmdet3d.models import builder
 import cv2
 import pdb
 import time
-import swanlab
+# import swanlab
 from mmcv.runner import auto_fp16, force_fp32
 from projects.mmdet3d_plugin.tools.visualizer import visualize_motion, visualize_flow, visualize_det, visualize_bev
 
@@ -87,10 +87,10 @@ class FIPTR_LSS(MVXTwoStageDetector):
         self.data_aug_conf = data_aug_conf
 
         self.global_step = 0
-        self.logger = swanlab.init(
-            project="fiptr",
-            config={},
-        )
+        # self.logger = swanlab.init(
+        #     project="fiptr",
+        #     config={},
+        # )
 
     # shared step
     def extract_img_feat(self, img, img_metas, future_egomotion=None,
@@ -168,7 +168,7 @@ class FIPTR_LSS(MVXTwoStageDetector):
         losses = self.pts_bbox_head.loss(*loss_inputs)
 
         #
-        if self.global_step % 100 == 0:
+        if self.global_step % 1 == 0:
             self.visualize_train(outs, gt_flow, img_metas, gt_segmentation, gt_instance, gt_bboxes_3d, gt_labels_3d)
 
         return losses
@@ -180,9 +180,12 @@ class FIPTR_LSS(MVXTwoStageDetector):
         gt_flows = torch.flip(gt_flow, dims=[2])
         flow_map = visualize_flow(pred_flows, gt_flows, img_metas)
 
-        self.logger.log({"flow_map": swanlab.Image(flow_map)}, step=self.global_step)
+        cv2.imwrite(
+            f"run/debug/{img_metas[0]['sample_idx']}_loss_flow_map.png", cv2.cvtColor(flow_map, cv2.COLOR_BGR2RGB)
+        )
+        # self.logger.log({"flow_map": swanlab.Image(flow_map)}, step=self.global_step)
 
-        outs = self.decode_bboxes(outs, img_metas, rescale=True)
+        outs = self.decode_bboxes(outs, img_metas, rescale=True, gt_nums=[gt.shape[0] for gt in gt_labels_3d])
         outs = self.transform_bboxes(outs, img_metas)
 
         sample_idx = img_metas[0]["sample_idx"]
@@ -248,7 +251,10 @@ class FIPTR_LSS(MVXTwoStageDetector):
 
         cv2.putText(canvas, sample_idx, (5, 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
 
-        self.logger.log({"motion_map": swanlab.Image(canvas)}, step=self.global_step)
+        cv2.imwrite(
+            f"run/debug/{sample_idx}_loss_bev_map.png", cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+        )
+        # self.logger.log({"motion_map": swanlab.Image(canvas)}, step=self.global_step)
 
     @auto_fp16(apply_to=('img_inputs'))
     def forward_train(self,
@@ -321,8 +327,8 @@ class FIPTR_LSS(MVXTwoStageDetector):
         loss = {key:value.item() for key,value in loss_dict.items()}
         loss["loss"] = sum(value for value in loss.values())
 
-        if self.global_step % 10 == 0:
-            self.logger.log({"iteration": time_sec_elapsed, "loss": loss}, step=self.global_step)
+        # if self.global_step % 10 == 0:
+        #     self.logger.log({"iteration": time_sec_elapsed, "loss": loss}, step=self.global_step)
 
         return loss_dict
 
@@ -421,8 +427,8 @@ class FIPTR_LSS(MVXTwoStageDetector):
 
         return bbox_list
 
-    def decode_bboxes(self, prediction, img_metas, rescale=False):
-        bbox_list = self.pts_bbox_head.get_bboxes(prediction, img_metas, rescale=rescale)
+    def decode_bboxes(self, prediction, img_metas, rescale=False, gt_nums=None):
+        bbox_list = self.pts_bbox_head.get_bboxes(prediction, img_metas, rescale=rescale, gt_nums=gt_nums)
         if len(bbox_list[0]) == 5:
             bbox_results = [
                 bbox3d2result(bboxes, scores, labels, segmentation, instance, seg=True)

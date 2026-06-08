@@ -742,7 +742,7 @@ class FIPTR_LSS_TIMESPECIFICMASKQUERY(DETRHead):
     
 
     @force_fp32(apply_to=('preds_dicts'))
-    def get_bboxes(self, preds_dicts, img_metas, rescale=False):
+    def get_bboxes(self, preds_dicts, img_metas, rescale=False, gt_nums=None):
         """Generate bboxes from bbox head predictions.
         Args:
             preds_dicts (tuple[list[dict]]): Prediction results.
@@ -751,7 +751,7 @@ class FIPTR_LSS_TIMESPECIFICMASKQUERY(DETRHead):
             list[dict]: Decoded bbox, scores and labels after nms.
         """
 
-        preds_dicts = self.bbox_coder.decode(preds_dicts)
+        preds_dicts = self.bbox_coder.decode(preds_dicts, gt_nums)
 
         num_samples = len(preds_dicts)
         ret_list = []

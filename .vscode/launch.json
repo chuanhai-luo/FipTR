@@ -61,6 +61,7 @@
                 "projects/configs/fiptr_lss_tiny/FipTR_LSS_Tiny.py",
                 // "projects/configs/fiptr_lss_tiny/FipTR_LSS_Tiny_CBGS.py",
                 // "projects/configs/fiptr_lss_tiny/FipTR_LSS_Tiny_SyncBN.py",
+                "--load_from", "/root/autodl-tmp/Projects/FipTR/work_dirs/FipTR_LSS_Tiny/latest.pth",
                 "--launcher", "none",
                 "--deterministic",
             ]
